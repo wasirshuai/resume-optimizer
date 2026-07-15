@@ -400,8 +400,8 @@ with col_intro1:
     st.markdown("#### 🔍 差距诊断")
     st.markdown("不只是润色表达，而是告诉你和岗位差在哪")
 with col_intro2:
-    st.markdown("#### 🎯 三维分析")
-    st.markdown("技能匹配 + 关键词覆盖 + 表达优化")
+    st.markdown("#### 🎯 四维分析")
+    st.markdown("硬门槛 + 技能匹配 + 关键词覆盖 + 表达优化")
 with col_intro3:
     st.markdown("#### 🔒 隐私保护")
     st.markdown("简历用完即删，不做任何存储")
@@ -587,6 +587,60 @@ if st.button("🚀 开始诊断", disabled=not can_diagnose):
 
     st.markdown("---")
 
+    # 维度零：硬门槛匹配（最先展示，因为是一票否决项）
+    hard_threshold = dims.get("hard_threshold", {})
+    if hard_threshold:
+        st.markdown("### 🚦 硬门槛匹配")
+        st.markdown(f"> {hard_threshold.get('summary', '')}")
+
+        # 检查是否有硬门槛不通过
+        has_blocking_failure = hard_threshold.get("has_blocking_failure", False)
+        blocking_count = hard_threshold.get("blocking_count", 0)
+
+        if has_blocking_failure:
+            st.markdown(f"""
+            <div style="background: #fff5f5; border: 2px solid #e74c3c; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                <strong style="color: #e74c3c;">⚠️ 硬门槛不通过</strong>
+                <br><span style="color: #666; font-size: 0.9rem;">有 {blocking_count} 项硬性要求不满足，可能直接影响简历通过率</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        details = hard_threshold.get("details", [])
+        if details:
+            for d in details:
+                status = d.get("candidate_status", "unclear")
+                is_blocking = d.get("is_blocking", False)
+
+                if status == "met":
+                    icon = "✅"
+                    color = "#27ae60"
+                    status_text = "满足"
+                elif status == "unmet":
+                    icon = "❌"
+                    color = "#e74c3c"
+                    status_text = "不满足"
+                else:
+                    icon = "❓"
+                    color = "#95a5a6"
+                    status_text = "无法判断"
+
+                blocking_tag = ' <span style="background:#e74c3c;color:white;padding:2px 8px;border-radius:4px;font-size:0.75rem;">一票否决</span>' if is_blocking else ''
+
+                st.markdown(f"""
+                <div class="suggestion-card" style="border-left-color: {color};">
+                    <strong>{icon} {d.get('threshold_name', '')} {blocking_tag}</strong>
+                    <span style="float: right; color: {color}; font-weight: bold;">{status_text}</span>
+                    <br><span style="color: #666; font-size: 0.9rem;">岗位要求：{d.get('requirement', '未明确')}</span>
+                    <br><span style="color: #666; font-size: 0.9rem;">你的情况：{d.get('candidate_detail', '未提及')}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if d.get("gap"):
+                    st.markdown(f"📊 **差距**：{d['gap']}")
+                if d.get("suggestion"):
+                    st.markdown(f"💡 **建议**：{d['suggestion']}")
+                st.markdown("")
+
     # 维度一：技能匹配度
     skill_match = dims.get("skill_match", {})
     if skill_match:
@@ -698,6 +752,6 @@ if st.button("🚀 开始诊断", disabled=not can_diagnose):
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #999; font-size: 0.85rem; padding: 1rem 0;">
-    简历优化助手 MVP v1.0 | 基于 AI 的简历差距诊断工具 | 你的简历不会被存储
+    简历优化助手 v2.0 | 基于 AI 的简历差距诊断工具 | 四维诊断：硬门槛 + 技能 + 关键词 + 表达 | 你的简历不会被存储
 </div>
 """, unsafe_allow_html=True)
