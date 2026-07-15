@@ -12,12 +12,13 @@ import io
 import sys
 import os
 import tempfile
+import hashlib
 
 import streamlit as st
 import pdfplumber
 from openai import OpenAI
 
-from prompts import RESUME_PARSE_PROMPT, JD_PARSE_PROMPT, DIAGNOSIS_PROMPT
+from prompts import RESUME_PARSE_PROMPT, JD_PARSE_PROMPT, DIAGNOSIS_PROMPT, RESUME_REWRITE_PROMPT
 
 # ============================================================
 # 页面配置
@@ -277,6 +278,18 @@ def get_score_label(score):
 
 
 # ============================================================
+# 当前浏览器会话状态（不写入磁盘或数据库）
+# ============================================================
+if "diagnosis_history" not in st.session_state:
+    st.session_state.diagnosis_history = []
+if "current_record_id" not in st.session_state:
+    st.session_state.current_record_id = None
+if "rewrite_draft" not in st.session_state:
+    st.session_state.rewrite_draft = ""
+if "rewrite_result" not in st.session_state:
+    st.session_state.rewrite_result = None
+
+# ============================================================
 # 侧边栏：API 配置
 # ============================================================
 st.sidebar.markdown("## ⚙️ API 配置")
@@ -404,7 +417,7 @@ with col_intro2:
     st.markdown("硬门槛 + 技能匹配 + 关键词覆盖 + 表达优化")
 with col_intro3:
     st.markdown("#### 🔒 隐私保护")
-    st.markdown("简历用完即删，不做任何存储")
+    st.markdown("当前浏览器会话内临时保存，刷新或关闭页面即清除")
 
 st.markdown("---")
 
@@ -464,7 +477,7 @@ jd_text = st.text_area(
 
 st.markdown("""
 <div class="privacy-note">
-    🔒 隐私说明：你的简历和 JD 仅用于本次诊断分析，不会被存储或用于其他用途。诊断完成后数据即销毁。
+    🔒 隐私说明：你的简历和 JD 仅用于本次浏览器会话内的诊断、改写和版本对比，不会写入数据库或本地文件；刷新或关闭页面后会话记录将自动清除。
 </div>
 """, unsafe_allow_html=True)
 
@@ -536,6 +549,24 @@ if st.button("🚀 开始诊断", disabled=not can_diagnose):
     if not diagnosis:
         st.error("诊断报告生成失败，请重试")
         st.stop()
+
+    # 仅保存于当前浏览器会话，不落库、不写文件。
+    record = {
+        "id": hashlib.sha256(f"{resume_text}\n{jd_text}\n{time.time()}".encode("utf-8")).hexdigest()[:12],
+        "version": len(st.session_state.diagnosis_history) + 1,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "resume_text": resume_text,
+        "jd_text": jd_text,
+        "jd_hash": hashlib.sha256(jd_text.strip().encode("utf-8")).hexdigest(),
+        "resume_json": resume_json,
+        "jd_json": jd_json,
+        "diagnosis": diagnosis,
+        "model_name": model_name,
+    }
+    st.session_state.diagnosis_history.append(record)
+    st.session_state.current_record_id = record["id"]
+    st.session_state.rewrite_draft = ""
+    st.session_state.rewrite_result = None
 
     progress.progress(90)
     status.markdown("✅ 诊断完成！")
@@ -747,11 +778,148 @@ if st.button("🚀 开始诊断", disabled=not can_diagnose):
     st.markdown("💡 *本报告由 AI 生成，仅供参考。建议结合实际情况判断和调整。*")
 
 # ============================================================
+# V2.1：会话历史、简历改写与再次诊断
+# ============================================================
+if st.session_state.diagnosis_history:
+    st.markdown("---")
+    st.markdown("## 🔁 优化迭代工作台")
+    st.caption("记录仅保留在当前浏览器会话中；刷新页面、关闭页面或会话结束后将自动清除。")
+
+    records = st.session_state.diagnosis_history
+    labels = {
+        item["id"]: f"V{item['version']} · {item['created_at']} · 综合分 {item['diagnosis'].get('overall_match_score', 0)}"
+        for item in records
+    }
+    current_id = st.selectbox(
+        "查看本次会话中的诊断版本",
+        options=list(labels.keys()),
+        format_func=lambda item_id: labels[item_id],
+        index=list(labels.keys()).index(st.session_state.current_record_id) if st.session_state.current_record_id in labels else len(labels) - 1,
+    )
+    st.session_state.current_record_id = current_id
+    current_record = next(item for item in records if item["id"] == current_id)
+    current_diagnosis = current_record["diagnosis"]
+
+    st.subheader(f"当前版本 V{current_record['version']}")
+    score_cols = st.columns(5)
+    score_cols[0].metric("综合分", current_diagnosis.get("overall_match_score", 0))
+    dimensions = current_diagnosis.get("dimensions", {})
+    for index, key in enumerate(["hard_threshold", "skill_match", "keyword_coverage", "expression_quality"], 1):
+        dimension = dimensions.get(key, {})
+        score_cols[index].metric(dimension.get("title", key), dimension.get("score", 0))
+    st.info(current_diagnosis.get("summary", "暂无总体评估"))
+
+    same_jd_records = [item for item in records if item["jd_hash"] == current_record["jd_hash"]]
+    if len(same_jd_records) > 1:
+        st.markdown("### 📈 同一 JD 的版本变化")
+        chart_data = {
+            "版本": [f"V{item['version']}" for item in same_jd_records],
+            "综合分": [item["diagnosis"].get("overall_match_score", 0) for item in same_jd_records],
+            "硬门槛": [item["diagnosis"].get("dimensions", {}).get("hard_threshold", {}).get("score", 0) for item in same_jd_records],
+            "技能": [item["diagnosis"].get("dimensions", {}).get("skill_match", {}).get("score", 0) for item in same_jd_records],
+            "关键词": [item["diagnosis"].get("dimensions", {}).get("keyword_coverage", {}).get("score", 0) for item in same_jd_records],
+            "表达": [item["diagnosis"].get("dimensions", {}).get("expression_quality", {}).get("score", 0) for item in same_jd_records],
+        }
+        st.line_chart(chart_data, x="版本")
+    elif len(records) > 1:
+        st.caption("不同 JD 的诊断不做分数对比，避免产生误导。")
+
+    st.markdown("### ✍️ 根据建议生成简历改写草稿")
+    rewrite_options = []
+    for detail in dimensions.get("expression_quality", {}).get("details", []):
+        if detail.get("suggestion"):
+            rewrite_options.append(f"[表达优化] {detail['suggestion']}")
+    for detail in dimensions.get("skill_match", {}).get("details", []):
+        if detail.get("status") in ("partial", "missing") and detail.get("suggestion"):
+            rewrite_options.append(f"[技能匹配] {detail['suggestion']}")
+    keyword_suggestion = dimensions.get("keyword_coverage", {}).get("suggestion", "")
+    if keyword_suggestion:
+        rewrite_options.append(f"[关键词覆盖] {keyword_suggestion}")
+
+    selected_suggestions = st.multiselect(
+        "选择要采纳的建议（只会基于原简历已有事实进行改写）",
+        options=rewrite_options,
+        key=f"rewrite_suggestions_{current_record['id']}",
+    )
+    if st.button("✨ 生成事实约束改写草稿", disabled=not selected_suggestions):
+        try:
+            rewrite_client = OpenAI(api_key=api_key, base_url=base_url)
+            rewrite_prompt = RESUME_REWRITE_PROMPT.replace("{resume_text}", current_record["resume_text"]).replace("{jd_text}", current_record["jd_text"]).replace("{selected_suggestions}", json.dumps(selected_suggestions, ensure_ascii=False, indent=2))
+            with st.spinner("正在生成改写草稿..."):
+                rewrite_result = extract_json(call_llm(rewrite_client, model_name, rewrite_prompt, temperature=0.2))
+            if isinstance(rewrite_result, dict) and rewrite_result.get("full_resume_draft"):
+                st.session_state.rewrite_result = rewrite_result
+                st.session_state.rewrite_draft = rewrite_result["full_resume_draft"]
+            else:
+                st.error("改写草稿生成失败，请重试。")
+        except Exception as error:
+            st.error(f"改写客户端初始化失败：{error}")
+
+    if st.session_state.rewrite_draft:
+        rewrite_result = st.session_state.rewrite_result or {}
+        st.success(rewrite_result.get("rewrite_summary", "已生成可编辑的简历草稿。"))
+        if rewrite_result.get("warnings"):
+            st.warning("请核实后再使用：\n\n" + "\n".join(f"- {item}" for item in rewrite_result["warnings"]))
+        st.session_state.rewrite_draft = st.text_area(
+            "编辑改写后的简历草稿",
+            value=st.session_state.rewrite_draft,
+            height=420,
+            key="rewrite_draft_editor",
+        )
+        if st.button("🚀 使用改写稿再次诊断"):
+            if not api_key:
+                st.error("请先在侧边栏填写 API Key。")
+            else:
+                try:
+                    diagnosis_client = OpenAI(api_key=api_key, base_url=base_url)
+                    rerun_resume = st.session_state.rewrite_draft
+                    rerun_jd = current_record["jd_text"]
+                    progress = st.progress(0)
+                    status = st.empty()
+                    status.markdown("📝 正在解析改写稿...")
+                    progress.progress(20)
+                    rerun_resume_json = extract_json(call_llm(diagnosis_client, model_name, RESUME_PARSE_PROMPT.replace("{resume_text}", rerun_resume)))
+                    status.markdown("🔍 正在重新生成诊断...")
+                    progress.progress(60)
+                    rerun_prompt = DIAGNOSIS_PROMPT.replace("{resume_json}", json.dumps(rerun_resume_json, ensure_ascii=False, indent=2)).replace("{jd_json}", json.dumps(current_record["jd_json"], ensure_ascii=False, indent=2))
+                    rerun_diagnosis = extract_json(call_llm(diagnosis_client, model_name, rerun_prompt, temperature=0.2))
+                    progress.empty()
+                    status.empty()
+                    if isinstance(rerun_resume_json, dict) and isinstance(rerun_diagnosis, dict):
+                        new_record = {
+                            "id": hashlib.sha256(f"{rerun_resume}\n{rerun_jd}\n{time.time()}".encode("utf-8")).hexdigest()[:12],
+                            "version": len(st.session_state.diagnosis_history) + 1,
+                            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "resume_text": rerun_resume,
+                            "jd_text": rerun_jd,
+                            "jd_hash": current_record["jd_hash"],
+                            "resume_json": rerun_resume_json,
+                            "jd_json": current_record["jd_json"],
+                            "diagnosis": rerun_diagnosis,
+                            "model_name": model_name,
+                        }
+                        st.session_state.diagnosis_history.append(new_record)
+                        st.session_state.current_record_id = new_record["id"]
+                        st.success("再次诊断完成，已生成新的版本记录。")
+                        st.rerun()
+                    else:
+                        st.error("重新诊断失败，请检查模型返回结果后重试。")
+                except Exception as error:
+                    st.error(f"再次诊断失败：{error}")
+
+    if st.button("🗑️ 清空当前会话记录"):
+        st.session_state.diagnosis_history = []
+        st.session_state.current_record_id = None
+        st.session_state.rewrite_draft = ""
+        st.session_state.rewrite_result = None
+        st.rerun()
+
+# ============================================================
 # 页脚
 # ============================================================
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #999; font-size: 0.85rem; padding: 1rem 0;">
-    简历优化助手 v2.0 | 基于 AI 的简历差距诊断工具 | 四维诊断：硬门槛 + 技能 + 关键词 + 表达 | 你的简历不会被存储
+    简历优化助手 v2.1 | 四维诊断 + 事实约束改写 + 会话内版本对比 | 数据仅在当前浏览器会话临时保存
 </div>
 """, unsafe_allow_html=True)
