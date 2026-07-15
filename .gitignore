@@ -28,3 +28,9 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.log
+
+# 个人文件（绝对不能上传）
+简历项目描述.md
+王帅飞_个人基础信息底稿.md
+generate_resume_docx.py
+ocr_resume.py
